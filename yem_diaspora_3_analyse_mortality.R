@@ -237,6 +237,131 @@
     cox.zph(fit_fe)
     plot(cox.zph(fit_fe)[3])
     
+
+  #...................................      
+  ## Sensitivity analysis: simulation varying time to departure from Yemen among people who didn't die in Yemen
+
+    # Define different proportions of people who left Yemen
+    sens_props <- seq(1, 0, by = -0.25)
+    names(sens_props) <- c("100%", "75%", "50%", "25%", "0% (baseline)")
+      
+    # Define different fractions of time that people who left spent in the analysis period before leaving
+    sens_fracs <- seq(0, 1, by = 0.20)
+    names(sens_fracs) <- c("0.00", "0.20", "0.40", "0.60", "0.80", "1.00 (baseline)")
+    
+    # Dataset of individuals, whether they died in Yemen and their age at exit from the cohort (age at entry = 0)
+    df_id <- by(df, df$id, function(x) {return(c(unique(x[, "id"]), sum(x[, "died_yemen"]), max(x[, "age_end"]) ) )})
+    df_id <- as.data.frame(do.call(rbind, df_id) )
+    colnames(df_id) <- c("id", "died_yemen", "age_end")
+    df_id[, c("died_yemen", "age_end")] <- sapply(df_id[, c("died_yemen", "age_end")], as.numeric)
+    df_id <- df_id[order(df_id$id), ]
+
+    # Columns to be retained in each simulation
+    cols_sim <- c("id", "age_start", "age_end", "died", "died_yemen", "birth_cohort", "gender", "period", "period_simple")
+    
+    # Number of simulations
+    n_sim <- 100
+    
+    # Simulation output
+    out_all <- c()
+    
+    # For each proportion of people leaving...
+    for (prop_k in names(sens_props) ) {
+      
+      # Define proportion leaving
+      sens_prop <- sens_props[prop_k]
+      
+      # For each fraction of period spent in Yemen before leaving...
+      for (frac_j in names(sens_fracs)) {
+        
+        # Define fraction
+        sens_frac <- sens_fracs[frac_j]
+      
+        # Set up simulation output
+        out <- data.frame(matrix(NA, nrow = n_sim * 3, ncol = 6))
+        colnames(out) <- c("prop_leaving", "frac_period", "period", "hr", "p")
+        out$prop_leaving <- prop_k
+        out$frac_period <- frac_j
+        out$period <- c(rep("war", n_sim), rep("pandemic", n_sim), rep("war + pandemic", n_sim))
+
+        # For each simulation...
+        for (i in 1:n_sim) {
+
+          # prepare data for simulation
+          df_id[, "leaver"] <- 0
+          df_id[, "leave_when"] <- NA
+          df_sim <- df[, cols_sim]
+          
+          # decide who leaves Yemen among those who didn't die in Yemen, and when they left
+          df_id[which(df_id$died_yemen == 0), "leaver"] <- rbinom(sum(df_id$died_yemen == 0), 1, sens_prop)
+          df_id[, "leave_when"] <- ifelse(df_id$leaver == 0, df_id$age_end, df_id$age_end * sens_frac)
+                    
+          # dataset to be simulated
+          df_sim <- merge(df_sim, df_id[, c("id", "leaver", "leave_when")], by = "id", all.x = TRUE)
+
+          # exclude periods beyond simulated age of exit
+          df_sim <- df_sim[which(df_sim$age_start < df_sim$leave_when), ]
+          
+          # in remaining records, replace maximum exit age with simulated value
+          x1 <- by(df_sim, df_sim$id, function(x) {return(cbind(x[, "id"], x[, "age_end"], (x[, "age_end"] == max(x[, "age_end"])) ) )} )
+          x1 <- as.data.frame(do.call(rbind, x1))
+          colnames(x1) <- c("id", "age_end", "is_max")
+          df_sim <- merge(df_sim, x1, by = c("id", "age_end"), all.x = TRUE)
+          df_sim$age_end <- ifelse(df_sim$is_max, df_sim$leave_when, df_sim$age_end)
+          
+          # run Cox model for both periods
+          fit1 <- coxph(Surv(age_start, age_end, died_yemen) ~ birth_cohort + gender + period , data = df_sim)
+          fit2 <- coxph(Surv(age_start, age_end, died_yemen) ~ birth_cohort + gender + period_simple , data = df_sim)
+          
+          # collect hazard ratios and p-values for association with war or pandemic periods
+          out[i, c("hr", "p")] <- summary(fit1)$coefficients["periodwar", c("exp(coef)", "Pr(>|z|)")]
+          out[i + n_sim, c("hr", "p")] <- summary(fit1)$coefficients["periodpandemic", c("exp(coef)", "Pr(>|z|)")]
+          
+          # collect p-value for association with war +- pandemic period
+          out[i + n_sim * 2, c("hr", "p")] <- summary(fit2)$coefficients["period_simplewar", c("exp(coef)", "Pr(>|z|)")]
+        }        
+
+        # Add output for this combination of sensitivity parameters to the overall output
+        out_all <- rbind(out_all, out)
+      }
+    }    
+    
+    # Format data for plotting
+    out_plot <- subset(out_all, period == "war + pandemic" & prop_leaving != "100%" & frac_period != "1.00 (baseline)")
+    out_plot$prop_leaving <- factor(gsub("[%]", "% migrated", out_plot$prop_leaving), 
+      levels = c("0% migrated (baseline)", "25% migrated", "50% migrated", "75% migrated"),
+      labels = c("0% migrated (baseline)", "25% migrated", "50% migrated", "75% migrated"))
+    out_plot$frac_period <- factor(out_plot$frac_period, 
+      levels = c("0.00", "0.20", "0.40", "0.60", "0.80"),
+      labels = c("at start of period", "at 1/5 of period", "at 2/5 of period", "at 3/5 of period","at 4/5 of period"))    
+    out_plot <- out_plot[order(out_plot$prop_leaving, out_plot$frac_period), ]
+
+    # Compute output means
+    sim_means <- aggregate(out_plot[, c("hr", "p")], by = out_plot[, c("prop_leaving", "frac_period", "period")], FUN = mean)
+    plot_labels <- sim_means[, c("prop_leaving", "frac_period", "hr", "p")]
+    plot_labels[, c("hr", "p")] <- sapply(plot_labels[, c("hr", "p")], as.numeric)
+    plot_labels$hr <- round(plot_labels$hr, digits = 2)
+    plot_labels$p <- round(plot_labels$p, digits = 3)
+    plot_labels$label <- paste("HR = ", plot_labels$hr, " (p = ", plot_labels$p, ")", sep = "")
+    plot_labels$label <- gsub("p = 0)", "p < 0.001)", plot_labels$label)
+    
+    # Visualise simulation outputs (omit pandemic and war periods separately) 
+    plot <- ggplot(data = out_plot, 
+      aes(x = hr, y = p, colour = prop_leaving, 
+      size = prop_leaving) ) +
+      geom_point(alpha = 0.5) +
+      facet_wrap(prop_leaving ~ frac_period, scales = "free") +
+      scale_x_continuous("mortality hazard ratio (war + pandemic period versus pre-war period") +
+      scale_y_continuous("p-value", limits = c(NA, NA)) +
+      theme_bw() +
+      scale_colour_manual(values = palette_cb[c(4,7,6,8)]) +
+      scale_size_manual(values = c(5,1,1,1)) +
+      theme(legend.position = "none", axis.title = element_text(colour = "grey20")) +
+      geom_text(aes(Inf, Inf, label = label), data = plot_labels, size = 3, hjust = 1, vjust = 1.3)
+      
+    plot
+    ggsave("out_survival_sens.png", dpi = "print", unit = "cm", width = 25, height = 15)
+    
     
     
 #.........................................................................................      
