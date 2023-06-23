@@ -351,7 +351,7 @@
       size = prop_leaving) ) +
       geom_point(alpha = 0.5) +
       facet_wrap(prop_leaving ~ frac_period, scales = "free") +
-      scale_x_continuous("mortality hazard ratio (war + pandemic period versus pre-war period") +
+      scale_x_continuous("mortality hazard ratio (war + pandemic period versus pre-war period)") +
       scale_y_continuous("p-value", limits = c(NA, NA)) +
       theme_bw() +
       scale_colour_manual(values = palette_cb[c(4,7,6,8)]) +
